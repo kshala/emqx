@@ -33,17 +33,15 @@
 -export([del_route/1, del_route/2, del_route/3]).
 -export([has_routes/1, match_routes/1, print_routes/1]).
 -export([topics/0]).
+
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 
 -type(destination() :: node() | {binary(), node()}).
 
--record(batch, {enabled, timer, pending}).
--record(state, {pool, id, batch :: #batch{}}).
+-record(state, {pool, id, batch :: undefined | emqx_batch:batch()}).
 
 -define(ROUTE, emqx_route).
--define(BATCH(Enabled), #batch{enabled = Enabled}).
--define(BATCH(Enabled, Pending), #batch{enabled = Enabled, pending = Pending}).
 
 %%-----------------------------------------------------------------------------
 %% Mnesia bootstrap
@@ -137,9 +135,17 @@ pick(Topic) ->
 init([Pool, Id]) ->
     rand:seed(exsplus, erlang:timestamp()),
     gproc_pool:connect_worker(Pool, {Pool, Id}),
-    Batch = #batch{enabled = emqx_config:get_env(route_batch_clean, false),
-                   pending = sets:new()},
-    {ok, ensure_batch_timer(#state{pool = Pool, id = Id, batch = Batch})}.
+    BatchRepl = init_batch_repl(emqx_config:get_env(route_batch_replication, false)),
+    io:format("BatchRepl: ~p~n", [BatchRepl]),
+    {ok, #state{pool = Pool, id = Id, batch = BatchRepl}}.
+
+init_batch_repl(false) ->
+    undefined;
+init_batch_repl(true) ->
+    emqx_batch:init(
+      #{batch_size => emqx_config:get_env(route_batch_size, 1000),
+        linger_ms => emqx_config:get_env(route_linger_ms, 5),
+        commit_fun => fun batch_replicate/1}).
 
 handle_call(Req, _From, State) ->
     emqx_logger:error("[Router] unexpected call: ~p", [Req]),
@@ -151,16 +157,19 @@ handle_cast({add_route, From, Route}, State) ->
     {noreply, NewState};
 
 handle_cast({add_route, Route = #route{topic = Topic, dest = Dest}}, State) ->
-    case lists:member(Route, get_routes(Topic)) of
-        true  -> ok;
-        false ->
-            ok = emqx_router_helper:monitor(Dest),
-            case emqx_topic:wildcard(Topic) of
-                true  -> log(trans(fun add_trie_route/1, [Route]));
-                false -> add_direct_route(Route)
-            end
-    end,
-    {noreply, State};
+    noreply(
+      case lists:member(Route, get_routes(Topic)) of
+          true  -> State;
+          false ->
+              ok = emqx_router_helper:monitor(Dest),
+              case emqx_topic:wildcard(Topic) of
+                  true ->
+                      log(trans(fun add_trie_route/1, [Route])),
+                      State;
+                  false ->
+                      add_direct_route(Route, State)
+              end
+      end);
 
 handle_cast({del_route, From, Route}, State) ->
     {noreply, NewState} = handle_cast({del_route, Route}, State),
@@ -168,11 +177,12 @@ handle_cast({del_route, From, Route}, State) ->
     {noreply, NewState};
 
 handle_cast({del_route, Route = #route{topic = Topic, dest = Dest}}, State) when is_tuple(Dest) ->
-    {noreply, case emqx_topic:wildcard(Topic) of
-                  true  -> log(trans(fun del_trie_route/1, [Route])),
-                           State;
-                  false -> del_direct_route(Route, State)
-              end};
+    noreply(
+      case emqx_topic:wildcard(Topic) of
+          true  -> log(trans(fun del_trie_route/1, [Route])),
+                   State;
+          false -> del_direct_route(Route, State)
+      end);
 
 handle_cast({del_route, Route = #route{topic = Topic}}, State) ->
     %% Confirm if there are still subscribers...
@@ -190,16 +200,15 @@ handle_cast(Msg, State) ->
     emqx_logger:error("[Router] unexpected cast: ~p", [Msg]),
     {noreply, State}.
 
-handle_info({timeout, _TRef, batch_delete}, State = #state{batch = Batch}) ->
-    _ = del_direct_routes(sets:to_list(Batch#batch.pending)),
-    {noreply, ensure_batch_timer(State#state{batch = ?BATCH(true, sets:new())}), hibernate};
+handle_info(batch_linger_expired, State = #state{batch = Batch}) ->
+    {noreply, State#state{batch = emqx_batch:commit(Batch)}, hibernate};
 
 handle_info(Info, State) ->
     emqx_logger:error("[Router] unexpected info: ~p", [Info]),
     {noreply, State}.
 
-terminate(_Reason, #state{pool = Pool, id = Id, batch = Batch}) ->
-    _ = cacel_batch_timer(Batch),
+terminate(_Reason, #state{pool = Pool, id = Id}) ->
+    %%_ = cacel_batch_timer(Batch),
     gproc_pool:disconnect_worker(Pool, {Pool, Id}).
 
 code_change(_OldVsn, State, _Extra) ->
@@ -209,19 +218,22 @@ code_change(_OldVsn, State, _Extra) ->
 %% Internal functions
 %%-----------------------------------------------------------------------------
 
-ensure_batch_timer(State = #state{batch = #batch{enabled = false}}) ->
+add_direct_route(Route, State = #state{batch = undefined}) ->
+    mnesia:async_dirty(fun mnesia:write/3, [?ROUTE, Route, sticky_write]),
     State;
-ensure_batch_timer(State = #state{batch = Batch}) ->
-    TRef = erlang:start_timer(50 + rand:uniform(50), self(), batch_delete),
-    State#state{batch = Batch#batch{timer = TRef}}.
+add_direct_route(Route, State = #state{batch = Batch}) ->
+    mnesia:ets(fun mnesia:write/3, [?ROUTE, Route, write]),
+    State#state{batch = emqx_batch:push({add, Route}, Batch)}.
 
-cacel_batch_timer(#batch{enabled = false}) ->
-    ok;
-cacel_batch_timer(#batch{enabled = true, timer = TRef}) ->
-    catch erlang:cancel_timer(TRef).
+del_direct_route(Route, State = #state{batch = undefined}) ->
+    mnesia:async_dirty(fun mnesia:delete_object/3, [?ROUTE, Route, sticky_write]),
+    State;
+del_direct_route(Route, State = #state{batch = Batch}) ->
+    mnesia:ets(fun mnesia:delete_object/3, [?ROUTE, Route, write]),
+    State#state{batch = emqx_batch:push({del, Route}, Batch)}.
 
-add_direct_route(Route) ->
-    mnesia:async_dirty(fun mnesia:write/3, [?ROUTE, Route, sticky_write]).
+batch_replicate(Updates) ->
+    mnesia:sync_dirty(fun emqx_route_replicator:commit/2, [self(), Updates]).
 
 add_trie_route(Route = #route{topic = Topic}) ->
     case mnesia:wread({?ROUTE, Topic}) of
@@ -229,25 +241,6 @@ add_trie_route(Route = #route{topic = Topic}) ->
         _  -> ok
     end,
     mnesia:write(?ROUTE, Route, sticky_write).
-
-del_direct_route(Route, State = #state{batch = ?BATCH(false)}) ->
-    del_direct_route(Route), State;
-del_direct_route(Route, State = #state{batch = Batch = ?BATCH(true, Pending)}) ->
-    State#state{batch = Batch#batch{pending = sets:add_element(Route, Pending)}}.
-
-del_direct_route(Route) ->
-    mnesia:async_dirty(fun mnesia:delete_object/3, [?ROUTE, Route, sticky_write]).
-
-del_direct_routes([]) ->
-    ok;
-del_direct_routes(Routes) ->
-    DelFun = fun(R = #route{topic = Topic}) ->
-                 case ets:member(emqx_subscriber, Topic) of
-                     true  -> ok;
-                     false -> mnesia:delete_object(?ROUTE, R, sticky_write)
-                 end
-             end,
-    mnesia:async_dirty(fun lists:foreach/2, [DelFun, Routes]).
 
 del_trie_route(Route = #route{topic = Topic}) ->
     case mnesia:wread({?ROUTE, Topic}) of
@@ -271,3 +264,4 @@ log(ok) -> ok;
 log({error, Reason}) ->
     emqx_logger:error("[Router] mnesia aborted: ~p", [Reason]).
 
+noreply(State) -> {noreply, State}.

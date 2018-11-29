@@ -23,13 +23,21 @@ start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
 init([]) ->
-    %% Router helper
-    Helper = {router_helper, {emqx_router_helper, start_link, []},
-              permanent, 5000, worker, [emqx_router_helper]},
-
+    Helper = #{id       => helper,
+               start    => {emqx_router_helper, start_link, []},
+               restart  => permanent,
+               shutdown => 5000,
+               type     => worker,
+               modules  => [emqx_router_helper]},
+    Replicator = #{id       => replicator,
+                   start    => {emqx_route_replicator, start_link, []},
+                   restart  => permanent,
+                   shutdown => 5000,
+                   type     => worker,
+                   modules  => [emqx_route_replicator]},
     %% Router pool
     RouterPool = emqx_pool_sup:spec(emqx_router_pool,
                                     [router, hash, emqx_vm:schedulers(),
                                      {emqx_router, start_link, []}]),
-    {ok, {{one_for_all, 0, 1}, [Helper, RouterPool]}}.
+    {ok, {{one_for_all, 0, 1}, [Helper, Replicator, RouterPool]}}.
 

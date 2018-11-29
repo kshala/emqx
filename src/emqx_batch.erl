@@ -56,6 +56,8 @@ push(El, Batch = #batch{batch_q = Q}) ->
     Batch#batch{batch_q = [El|Q]}.
 
 -spec(commit(batch()) -> batch()).
+commit(Batch = #batch{batch_q = []}) ->
+    reset(Batch);
 commit(Batch = #batch{batch_q = Q, commit_fun = Commit}) ->
     _ = Commit(lists:reverse(Q)),
     reset(Batch).
