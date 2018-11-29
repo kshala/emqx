@@ -66,14 +66,15 @@ init([]) ->
 
 callback_mode() -> state_functions.
 
-running(info, {mnesia_table_event, {write, {?ROUTE_REPL, Router, Updates}, _}}, State)
+running(info, {mnesia_table_event, {write, {?ROUTE_REPL, Router, _Updates}, _}}, State)
     when node(Router) == node() ->
     {keep_state, State};
 
 running(info, {mnesia_table_event, {write, {?ROUTE_REPL, Router, Updates}, _}}, State) ->
-    io:format("[Route Repl] Remote repl from ~s: router = ~p, count = ~w~n",
-              [node(Router), Router, length(Updates)]),
-    mnesia:ets(fun lists:foreach/2, [fun update_route/1, Updates]),
+    %%io:format("[Route Repl] Remote repl from ~s: router = ~p, count = ~w~n",
+    %%          [node(Router), Router, length(Updates)]),
+    _ = spawn(fun() -> lists:foreach(fun update_route/1, Updates) end),
+    %% mnesia:ets(fun lists:foreach/2, [fun update_route/1, Updates]),
     {keep_state, State};
 
 running(EventType, EventContent, State) ->
@@ -88,7 +89,8 @@ code_change(_OldVsn, StateName, State, _Extra) ->
     {ok, StateName, State}.
 
 update_route({add, Route}) ->
-    mnesia:write(?ROUTE, Route, write);
+    ets:insert(?ROUTE, Route);
+    %%mnesia:write(?ROUTE, Route, write);
 update_route({del, Route}) ->
     mnesia:delete_object(?ROUTE, Route, write);
 update_route(Other) ->

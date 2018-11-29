@@ -52,7 +52,9 @@ mnesia(boot) ->
                 {type, bag},
                 {ram_copies, [node()]},
                 {record_name, route},
-                {attributes, record_info(fields, route)}]);
+                {attributes, record_info(fields, route)},
+                {storage_properties, [{ets, [{read_concurrency, true},
+                                             {write_concurrency, true}]}]}]);
 mnesia(copy) ->
     ok = ekka_mnesia:copy_table(?ROUTE).
 
@@ -222,7 +224,8 @@ add_direct_route(Route, State = #state{batch = undefined}) ->
     mnesia:async_dirty(fun mnesia:write/3, [?ROUTE, Route, sticky_write]),
     State;
 add_direct_route(Route, State = #state{batch = Batch}) ->
-    mnesia:ets(fun mnesia:write/3, [?ROUTE, Route, write]),
+    ets:insert(?ROUTE, Route),
+    %%mnesia:ets(fun mnesia:write/3, [?ROUTE, Route, write]),
     State#state{batch = emqx_batch:push({add, Route}, Batch)}.
 
 del_direct_route(Route, State = #state{batch = undefined}) ->
