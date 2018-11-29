@@ -1740,9 +1740,24 @@ end}.
    {datatype, {enum, [true, false]}}
  ]}.
 
-{mapping, "broker.route_batch_clean", "emqx.route_batch_clean", [
-  {default, on},
+
+%%--------------------------------------------------------------------
+%% Router
+%%--------------------------------------------------------------------
+
+{mapping, "router.batch_replication", "emqx.route_batch_replication", [
+  {default, off},
   {datatype, flag}
+]}.
+
+{mapping, "router.batch_size", "emqx.route_batch_size", [
+  {default, 1000},
+  {datatype, integer}
+]}.
+
+{mapping, "router.linger_ms", "emqx.route_linger_ms", [
+  {default, 5},
+  {datatype, integer}
 ]}.
 
 %%--------------------------------------------------------------------
