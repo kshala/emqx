@@ -17,14 +17,14 @@
 -behaviour(gen_server).
 
 -export([start_link/0]).
--export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
+
+-export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2,
+         code_change/3]).
 
 %% internal export
 -export([stats_fun/0]).
 
 -define(HELPER, ?MODULE).
-
--record(state, {}).
 
 -spec(start_link() -> {ok, pid()} | ignore | {error, any()}).
 start_link() ->
@@ -38,7 +38,7 @@ init([]) ->
     %% Use M:F/A for callback, not anonymous function because
     %% fun M:F/A is small, also no badfun risk during hot beam reload
     emqx_stats:update_interval(broker_stats, fun ?MODULE:stats_fun/0),
-    {ok, #state{}, hibernate}.
+    {ok, #{}, hibernate}.
 
 handle_call(Req, _From, State) ->
     emqx_logger:error("[BrokerHelper] unexpected call: ~p", [Req]),

@@ -456,3 +456,4 @@ groups(Topic) ->
                    ({_, _}, Acc) ->
                         Acc
                 end, [], ets:lookup(?SUBSCRIBER, Topic)).
+
