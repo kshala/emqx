@@ -202,6 +202,9 @@ handle_cast(Msg, State) ->
     ?LOG(error, "unexpected cast: ~p", [Msg]),
     {noreply, State}.
 
+handle_info({dispatch, _Topic, Message}, State) ->
+    handle_info({deliver, {publish, undefined, Message#message{qos = ?QOS_0}}}, State);
+
 handle_info({deliver, PubOrAck}, State = #state{proto_state = ProtoState}) ->
     case emqx_protocol:deliver(PubOrAck, ProtoState) of
         {ok, ProtoState1} ->

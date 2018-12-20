@@ -470,7 +470,12 @@ handle_cast({subscribe, FromPid, {PacketId, _Properties, TopicFilters}},
                                                   emqx_hooks:run('session.subscribed', [#{client_id => ClientId}, Topic, SubOpts#{first => false}]),
                                                   maps:put(Topic, SubOpts, SubMap);
                                               error ->
-                                                  emqx_broker:subscribe(Topic, ClientId, SubOpts),
+						  case maps:get(fastlane, SubOpts, false) of
+						      true ->
+						          emqx_broker:subscribe(Topic, FromPid, SubOpts);
+						      false ->
+						          emqx_broker:subscribe(Topic, ClientId, SubOpts)
+						  end,
                                                   emqx_hooks:run('session.subscribed', [#{client_id => ClientId}, Topic, SubOpts#{first => true}]),
                                                   maps:put(Topic, SubOpts, SubMap)
                                           end}

@@ -180,6 +180,8 @@ join(Words) ->
 parse(Topic) when is_binary(Topic) ->
     parse(Topic, #{}).
 
+parse(<<"$fastlane/", Topic1/binary>>, Options) ->
+    parse(Topic1, maps:put(fastlane, true, Options));
 parse(Topic = <<"$queue/", _/binary>>, #{share := _Group}) ->
     error({invalid_topic, Topic});
 parse(Topic = <<?SHARE, "/", _/binary>>, #{share := _Group}) ->
