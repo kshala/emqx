@@ -368,6 +368,17 @@ publish_readq_msg(ClientPid, [{_PktId, Msg} | ReadQ], NewReadQ) ->
     {ok, PktId} = emqx_client:publish(ClientPid, Msg),
     publish_readq_msg(ClientPid, ReadQ, [{PktId, Msg} | NewReadQ]).
 
+delete(PktId, State = #state{replayq = ReplayQ, queue_option = #{mem_cache := false}}) ->
+    {NewReplayQ, NewAckRef, Msg} = replayq:pop(ReplayQ, #{count_limit => 1}),
+    case Msg of
+        {PktId, _} ->
+            ok = replayq:ack(ReplayQ, NewAckRef),
+            State#state{ ackref = NewAckRef, replayq = NewReplayQ };
+        _Msg ->
+            self() ! pop,
+            State
+    end;
+
 delete(_PktId, State = #state{readq = [], writeq = [], replayq = ReplayQ, ackref = AckRef}) ->
     ok = replayq:ack(ReplayQ, AckRef),
     self() ! pop,
